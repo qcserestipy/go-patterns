@@ -20,6 +20,10 @@ type Result struct {
 	Err     error
 }
 
+const maxInFlight = 200
+
+var inflight = make(chan struct{}, maxInFlight)
+
 func FanOut() {
 	// Create a cancelable context so we can stop long-running pipelines gracefully.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -57,7 +61,8 @@ func FanOut() {
 	// Start producer in its own goroutine to feed input and then close it.
 	go func() {
 		defer close(input) // sender closes the channel when done
-		produce(ctx, items, input)
+		// produce(ctx, items, input)
+		generateBatches(ctx, input)
 		// For streaming, use: generate(ctx, input) to send until canceled
 	}()
 
@@ -100,6 +105,46 @@ func generate(ctx context.Context, input chan<- WorkItem) {
 	}
 }
 
+func generateBatches(ctx context.Context, input chan<- WorkItem) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	const batchSize = 100
+	batchID := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("generator stopped")
+			return
+
+		case <-ticker.C:
+			fmt.Printf("starting batch %d\n", batchID)
+
+			for i := range batchSize {
+				// 1) acquire a slot (blocks if cap reached)
+				select {
+				case <-ctx.Done():
+					return
+				case inflight <- struct{}{}:
+				}
+
+				// 2) enqueue work (may block if input buffer is full)
+				select {
+				case <-ctx.Done():
+					// give slot back if we’re shutting down while blocked
+					<-inflight
+					return
+				case input <- WorkItem{ID: batchID*batchSize + i}:
+				}
+			}
+
+			fmt.Printf("batch %d done\n", batchID)
+			batchID++
+		}
+	}
+}
+
 // worker simulates work by sleeping for a random duration.
 // It reads from input until the input channel is closed or context is canceled.
 func worker(ctx context.Context, workerID int, input <-chan WorkItem, results chan<- Result) {
@@ -127,6 +172,9 @@ func worker(ctx context.Context, workerID int, input <-chan WorkItem, results ch
 				Err:     nil,
 			}:
 			}
+
+			//Release slot
+			<-inflight
 		}
 	}
 }

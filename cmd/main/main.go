@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	chainopts "go-patterns/pkg/chain-options"
+	"go-patterns/pkg/concurrent"
 	funcopts "go-patterns/pkg/functional-options"
 
 	"github.com/sirupsen/logrus"
@@ -29,6 +30,10 @@ func main() {
 		logrus.Errorf("error: %v", err)
 		return
 	}
-
 	fmt.Println(app2)
+
+	concurrent.TestChannels()
+
+	concurrent.FanOut()
+
 }
